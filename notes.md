@@ -136,3 +136,44 @@ Also validated via Argo CD — application \`peeks-s3-kro-xxxxx\` showed Synced/
 
 See companion repo: \`AWS-EKS-fundamentals\` — covered node/cluster basics,
 AWS Load Balancer Controller, NLB vs ALB, and EKS Auto Mode/Karpenter internals.
+
+## 9. Rust Backend — Full Deployment (Completed)
+
+Successfully deployed the Unicorn E-Commerce Rust backend end-to-end via the
+Backstage-provisioned CI/CD pipeline and kro `AppmodService` custom resource.
+
+### Root causes debugged and fixed (real production-style issues):
+
+1. **Missing `${AWS_ACCOUNT_ID}` substitution** — the deployment manifest template
+   included a placeholder that our initial `sed` pass didn't cover, causing kro
+   to construct an invalid IAM role ARN. ACK's IAM controller correctly rejected
+   it as AccessDenied. Fix: added the missing `sed` substitution and verified
+   with a regex check for any remaining `<...>` or `${...}` placeholders before
+   committing.
+
+2. **Missing stable/preview Kubernetes Services** — kro's `AppmodService` RGD
+   does not create plain `Service` objects; Argo Rollouts requires a
+   `stableService` and `previewService` to exist for canary traffic routing.
+   The Rollout was stuck in `Degraded`/`InvalidSpec` state referencing a
+   nonexistent service. Fix: manually appended two `Service` manifests to the
+   deployment YAML, matching the label selector Argo Rollouts actually expected
+   (confirmed via `kubectl get rollout ... -o jsonpath='{.spec.selector.matchLabels}'`
+   rather than guessing).
+
+### Verification
+
+\`\`\`bash
+kubectl get pods -n team-rust
+# rust-microservice-dev-xxxx   1/1   Running
+
+curl --request GET -sLk --url "http://\${DNS_DEV}/rust-app/collection/FRONT_PAGE" | jq '.'
+# Returns real product data from DynamoDB
+\`\`\`
+
+### Key lesson
+
+When a kro-managed app abstraction (\`AppmodService\`) doesn't create every
+resource a dependent controller (Argo Rollouts) needs, check the *consuming*
+resource's actual spec/selector rather than assuming template patterns from
+a previous exercise will match exactly — label names can differ between app
+instances even when using the same RGD.
