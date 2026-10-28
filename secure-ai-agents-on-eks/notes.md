@@ -57,3 +57,30 @@ Fills the `${ACCOUNT_ID}` and `${AWS_REGION}` placeholders in the image referenc
 Confirms the pod is Running and that config comes from the `agent-config` ConfigMap (gateway URL, model alias, table name).
 
 MCP preview: the tool lives inside the agent, so every agent needing it copies code, dependency and IAM permission. Lab 3 moves it to an MCP server that agents discover at runtime.
+
+## Lab 1: Building your first agent
+
+Strands agent on EKS. Model calls go to Bedrock through the Envoy AI Gateway (no AWS credentials in agent code). One in-process tool, `lookup_order`, backed by DynamoDB.
+
+    cat ~/environment/modules/200-strands-agents/customer-agent/tools.py
+`@tool` turns a Python function into something the model can call. Strands reads the name, type hints and docstring, and the docstring acts as the prompt for when to use it. Errors are returned as data so the agent can explain them to the customer.
+
+MCP preview: the tool lives inside the agent, so every agent needing it copies the code, dependency and IAM permission. Lab 3 moves it to an MCP server that agents discover at runtime.
+
+## Lab 2: Observability with Langfuse
+
+The agent now emits OpenTelemetry traces. Every request becomes a trace (agent -> model call -> tool call -> gateway).
+
+    kubectl get pods,svc -n telemetry
+    kubectl get pods -n langfuse
+Langfuse and a shared OTel Collector were already running. The collector is the single authenticated exit to Langfuse.
+
+    envsubst < k8s.yaml | kubectl apply -f -
+    kubectl rollout status deployment/customer-agent --timeout=120s
+Deploys the `:langfuse` image, launched with `opentelemetry-instrument`, so tracing needs no change to the agent logic. A Deployment creates a ReplicaSet, which creates the pods. `rollout status` blocks until the pod is Ready (or the timeout hits). Updates are rolling: a new ReplicaSet scales up while the old one scales down, and `kubectl rollout undo` reverts.
+
+    kubectl exec deploy/customer-agent -- env | grep -E '^(LANGFUSE_BASE_URL|OTEL_EXPORTER_OTLP_ENDPOINT|OTEL_SERVICE_NAME)='
+    kubectl logs deploy/customer-agent | grep Langfuse
+Confirmed the export target came from the ConfigMap and the Langfuse client authenticated ("Langfuse connected successfully"). API keys live in a Secret, not the ConfigMap.
+
+Reading a trace (Langfuse -> Tracing -> Traces -> Timeline): `POST /chat` root, the agent's chat generation, the `lookup_order` tool call, and the gateway's `ChatCompletion` span nested under the agent's call, because the agent propagates W3C `traceparent`.
